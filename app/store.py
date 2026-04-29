@@ -344,7 +344,7 @@ class SQLStore:
             ).fetchall()
             vec_ranking = [r[0] for r in vec_rows]
         except Exception:
-            pass
+            session.rollback()
 
         # Full-text search with PostgreSQL tsvector ('simple' = no language stemming)
         fts_ranking: list[str] = []
@@ -364,7 +364,7 @@ class SQLStore:
             ).fetchall()
             fts_ranking = [r[0] for r in fts_rows]
         except Exception:
-            pass
+            session.rollback()
 
         rrf_scores = _rrf([vec_ranking, fts_ranking])
 
