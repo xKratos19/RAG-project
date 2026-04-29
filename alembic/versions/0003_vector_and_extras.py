@@ -16,30 +16,39 @@ branch_labels = None
 depends_on = None
 
 
+def _column_exists(inspector: sa.Inspector, table: str, column: str) -> bool:
+    return any(c["name"] == column for c in inspector.get_columns(table))
+
+
+def _index_exists(inspector: sa.Inspector, table: str, index: str) -> bool:
+    return any(i["name"] == index for i in inspector.get_indexes(table))
+
+
 def upgrade() -> None:
     bind = op.get_bind()
+    inspector = sa.inspect(bind)
     dialect = bind.dialect.name
 
-    # embedding_json: stores float list as JSON text; on Postgres we cast to vector(768) at query time
-    op.add_column("rag_chunks", sa.Column("embedding_json", sa.Text(), nullable=True))
+    if not _column_exists(inspector, "rag_chunks", "embedding_json"):
+        op.add_column("rag_chunks", sa.Column("embedding_json", sa.Text(), nullable=True))
 
-    # On Postgres: HNSW expression index using the vector cast for fast ANN search
     if dialect == "postgresql":
-        op.execute(
-            "CREATE INDEX rag_chunks_embedding_hnsw "
-            "ON rag_chunks USING hnsw ((embedding_json::vector(768)) vector_cosine_ops)"
-        )
-        # GIN index for full-text search using 'simple' dictionary (language-agnostic)
-        op.execute(
-            "CREATE INDEX rag_chunks_content_fts "
-            "ON rag_chunks USING gin (to_tsvector('simple', content))"
-        )
+        if not _index_exists(inspector, "rag_chunks", "rag_chunks_embedding_hnsw"):
+            op.execute(
+                "CREATE INDEX rag_chunks_embedding_hnsw "
+                "ON rag_chunks USING hnsw ((embedding_json::vector(768)) vector_cosine_ops)"
+            )
+        if not _index_exists(inspector, "rag_chunks", "rag_chunks_content_fts"):
+            op.execute(
+                "CREATE INDEX rag_chunks_content_fts "
+                "ON rag_chunks USING gin (to_tsvector('simple', content))"
+            )
 
-    # callback_url: stored per-job so the worker can fire webhooks (ingest.failed, namespace.deleted)
-    op.add_column("rag_jobs", sa.Column("callback_url", sa.Text(), nullable=True))
+    if not _column_exists(inspector, "rag_jobs", "callback_url"):
+        op.add_column("rag_jobs", sa.Column("callback_url", sa.Text(), nullable=True))
 
-    # file_bytes: temporary storage for uploaded file payloads before the worker picks them up
-    op.add_column("rag_jobs", sa.Column("file_bytes", sa.LargeBinary(), nullable=True))
+    if not _column_exists(inspector, "rag_jobs", "file_bytes"):
+        op.add_column("rag_jobs", sa.Column("file_bytes", sa.LargeBinary(), nullable=True))
 
 
 def downgrade() -> None:
