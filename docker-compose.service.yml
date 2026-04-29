@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
     environment:
       API_KEY: ${API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY}
@@ -15,8 +17,10 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rag:rag@rag-postgres:5432/rag}
       REDIS_URL: ${REDIS_URL:-redis://rag-redis:6379/0}
     depends_on:
-      - rag-postgres
-      - rag-redis
+      rag-postgres:
+        condition: service_healthy
+      rag-redis:
+        condition: service_started
     networks:
       - lex-advisor
     restart: unless-stopped
@@ -34,8 +38,10 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-citydock-rag-worker}
     depends_on:
-      - rag-postgres
-      - rag-redis
+      rag-postgres:
+        condition: service_healthy
+      rag-redis:
+        condition: service_started
     networks:
       - lex-advisor
     restart: unless-stopped
@@ -48,6 +54,11 @@ services:
       POSTGRES_PASSWORD: rag
     volumes:
       - rag-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
     networks:
       - lex-advisor
     restart: unless-stopped
@@ -63,7 +74,7 @@ services:
 
 networks:
   lex-advisor:
-    external: true
+    driver: bridge
 
 volumes:
   rag-postgres-data:
