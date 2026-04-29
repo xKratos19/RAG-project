@@ -1,0 +1,698 @@
+openapi: 3.0.3
+info:
+  title: Lex-Advisor RAG Service API
+  version: 1.0.0
+  description: |
+    HTTP contract between the Lex-Advisor platform (caller) and any external
+    RAG service (provider). Any implementation that fully conforms to this
+    spec is a drop-in replacement for our local RAG.
+
+    The provider owns: chunking, embeddings, vector + full-text indices,
+    retrieval, reranking, and final answer composition.
+
+    The caller owns: source management (sources, agents, categories), admin
+    UI, audit log, consent, conversation memory, Telegram/WhatsApp transports.
+
+    Companion docs:
+      - docs/external/rag-api-spec.md (full narrative spec)
+  contact:
+    name: Lex-Advisor Platform Team
+    email: costin@citydock.ro
+  license:
+    name: Apache-2.0
+
+servers:
+  - url: https://rag.partner.example/api
+    description: Partner production (replace with your deployment)
+  - url: http://localhost:8080
+    description: Local development
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: query
+    description: Answer questions with citations
+  - name: ingest
+    description: Index documents under a namespace
+  - name: namespace
+    description: Per-namespace lifecycle + stats
+  - name: health
+    description: Liveness + dependencies
+
+paths:
+  /v1/query:
+    post:
+      tags: [query]
+      summary: Answer a question with citations
+      description: |
+        The hot path. p95 target ≤ 4,000 ms. Returns answer, citations,
+        usage, and latency. Empty result = answer:null, citations:[],
+        confidence:0.0 (no hallucinations).
+      operationId: query
+      parameters:
+        - $ref: '#/components/parameters/XRequestID'
+        - $ref: '#/components/parameters/XTenantID'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+            example:
+              question: "Ce spune articolul 15 din Legea 31/1990?"
+              language: "ro"
+              namespaces: ["legea_31_1990"]
+              top_k: 5
+              hint_article_number: "15"
+              rerank: true
+              include_answer: true
+              conversation_history: []
+              style_hints:
+                answer_max_chars: 1800
+                cite_inline: true
+                tone: "formal"
+      responses:
+        '200':
+          description: Successful answer with citations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '500': { $ref: '#/components/responses/InternalError' }
+        '502': { $ref: '#/components/responses/UpstreamError' }
+        '504': { $ref: '#/components/responses/Timeout' }
+
+  /v1/ingest:
+    post:
+      tags: [ingest]
+      summary: Index a document under a namespace
+      description: |
+        Accepts URL-based or file-based ingestion. Returns 202 with a job_id
+        for async polling. Idempotent via Idempotency-Key header.
+      operationId: ingest
+      parameters:
+        - $ref: '#/components/parameters/XRequestID'
+        - $ref: '#/components/parameters/XTenantID'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+            example:
+              namespace_id: "legea_31_1990"
+              source_id: "s_47381"
+              source_type: "url"
+              url: "https://legislatie.just.ro/Public/DetaliiDocument/47381"
+              mime_type_hint: "text/html"
+              metadata:
+                source_title: "Legea 31/1990"
+                language: "ro"
+                document_type: "lege"
+                published_at: "1990-11-16"
+              callback_url: "https://api.lex-advisor.citydock.ro/webhooks/rag/ingest"
+          multipart/form-data:
+            schema:
+              type: object
+              required: [payload, file]
+              properties:
+                payload:
+                  $ref: '#/components/schemas/IngestRequest'
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '202':
+          description: Ingestion queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestJob'
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '415': { $ref: '#/components/responses/UnsupportedMediaType' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /v1/ingest/{job_id}:
+    get:
+      tags: [ingest]
+      summary: Poll ingestion job status
+      operationId: getIngestStatus
+      parameters:
+        - $ref: '#/components/parameters/XTenantID'
+        - name: job_id
+          in: path
+          required: true
+          schema: { type: string }
+          example: "j_9f8e7d6c"
+      responses:
+        '200':
+          description: Current job state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestJob'
+          headers:
+            Retry-After:
+              schema: { type: integer }
+              description: Seconds to wait before next poll (non-terminal status)
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/namespaces/{namespace_id}/sources/{source_id}:
+    delete:
+      tags: [namespace]
+      summary: Remove a single source from a namespace
+      description: |
+        Used when a source is deleted or re-uploaded. Provider MUST remove
+        all chunks indexed under the source. SLA ≤ 5 minutes.
+      operationId: deleteSource
+      parameters:
+        - $ref: '#/components/parameters/XTenantID'
+        - $ref: '#/components/parameters/NamespaceID'
+        - name: source_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204':
+          description: Source removed
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/namespaces/{namespace_id}:
+    delete:
+      tags: [namespace]
+      summary: Hard-delete entire namespace (GDPR)
+      description: |
+        Irreversible. All chunks, embeddings, derived data removed.
+        Propagation SLA ≤ 24 h. Provider MUST NOT retain derived data
+        (fine-tuned indices, embedding caches) past this window.
+      operationId: deleteNamespace
+      parameters:
+        - $ref: '#/components/parameters/XTenantID'
+        - $ref: '#/components/parameters/NamespaceID'
+      responses:
+        '202':
+          description: Deletion queued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [job_id, status, sla]
+                properties:
+                  job_id: { type: string }
+                  status: { type: string, example: "queued" }
+                  sla: { type: string, example: "24h" }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/namespaces/{namespace_id}/stats:
+    get:
+      tags: [namespace]
+      summary: Per-namespace statistics
+      description: Powers admin dashboard badges (chunk count, last indexed).
+      operationId: getNamespaceStats
+      parameters:
+        - $ref: '#/components/parameters/XTenantID'
+        - $ref: '#/components/parameters/NamespaceID'
+      responses:
+        '200':
+          description: Namespace stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NamespaceStats'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /v1/health:
+    get:
+      tags: [health]
+      summary: Liveness + dependency status
+      description: Fast, unauthenticated. Used by caller healthcheck + admin status dashboard.
+      operationId: health
+      security: []
+      responses:
+        '200':
+          description: Service is ok or degraded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: Service is down
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Static, per-tenant API key (≥ 256-bit entropy). Rotatable.
+
+  parameters:
+    XRequestID:
+      name: X-Request-ID
+      in: header
+      required: true
+      schema: { type: string, format: uuid }
+      description: Caller's request ID; echoed in response for correlation.
+    XTenantID:
+      name: X-Tenant-ID
+      in: header
+      required: true
+      schema: { type: string }
+      description: Caller's tenant slug (e.g. ph-balta-doamnei).
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: { type: string, format: uuid }
+      description: |
+        Required on POST /v1/ingest. Retries with the same key MUST return
+        the existing job. Different body + same key = 409.
+    NamespaceID:
+      name: namespace_id
+      in: path
+      required: true
+      schema: { type: string }
+      example: legea_31_1990
+
+  schemas:
+
+    # ---- Common ----
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code:
+              type: string
+              enum:
+                - invalid_request
+                - unauthorized
+                - forbidden
+                - not_found
+                - namespace_not_found
+                - duplicate_job
+                - payload_too_large
+                - unsupported_media_type
+                - validation_error
+                - rate_limited
+                - internal_error
+                - upstream_error
+                - service_unavailable
+                - timeout
+            message: { type: string }
+            request_id: { type: string, format: uuid }
+            details:
+              type: object
+              additionalProperties: true
+
+    Usage:
+      type: object
+      required: [input_tokens, output_tokens, cost_usd, model_id]
+      properties:
+        input_tokens: { type: integer, minimum: 0 }
+        output_tokens: { type: integer, minimum: 0 }
+        cost_usd:
+          type: number
+          format: float
+          minimum: 0
+          description: Cost of this call; 0 if provider cannot compute.
+        model_id:
+          type: string
+          description: Provider's model identifier, e.g. gemini-2.5-flash
+
+    Chunk:
+      type: object
+      required:
+        - chunk_id
+        - content
+        - source_id
+        - namespace_id
+        - score
+      properties:
+        chunk_id: { type: string, format: uuid }
+        content:
+          type: string
+          maxLength: 4000
+          description: Romanian text; used directly as citation body in caller UI.
+        article_number:
+          type: string
+          nullable: true
+          description: Legal-domain exact-match key; may contain '^' (e.g. "15^1").
+        section_title:
+          type: string
+          nullable: true
+          example: "Capitolul II — Constituirea societăților"
+        point_number:
+          type: string
+          nullable: true
+        page_number:
+          type: integer
+          nullable: true
+          minimum: 1
+        source_id: { type: string }
+        source_url:
+          type: string
+          format: uri
+          nullable: true
+        source_title:
+          type: string
+          nullable: true
+        namespace_id: { type: string }
+        score:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          description: Provider-defined ranking score; higher is better.
+        metadata:
+          type: object
+          additionalProperties: true
+
+    Citation:
+      type: object
+      required: [marker, chunk]
+      properties:
+        marker:
+          type: string
+          description: Inline marker matching answer text, e.g. "[1]"
+          example: "[1]"
+        chunk:
+          $ref: '#/components/schemas/Chunk'
+
+    ConversationTurn:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content: { type: string }
+
+    StyleHints:
+      type: object
+      properties:
+        answer_max_chars:
+          type: integer
+          default: 2000
+          minimum: 100
+          maximum: 10000
+        cite_inline:
+          type: boolean
+          default: true
+          description: Inject "[1]"-style markers into answer text.
+        tone:
+          type: string
+          enum: [formal, casual]
+          default: formal
+
+    # ---- Query ----
+    QueryRequest:
+      type: object
+      required: [question, language, namespaces]
+      properties:
+        question:
+          type: string
+          maxLength: 2000
+        language:
+          type: string
+          enum: [ro]
+          description: ISO 639-1. Only "ro" supported in v1.
+        namespaces:
+          type: array
+          items: { type: string }
+          minItems: 1
+          maxItems: 10
+        top_k:
+          type: integer
+          default: 10
+          minimum: 1
+          maximum: 50
+        hint_article_number:
+          type: string
+          nullable: true
+          description: |
+            Exact-article match hint. LEGAL-DOMAIN-CRITICAL: caller regex-
+            extracts article numbers from the question and passes them here
+            so the provider can boost exact matches.
+        rerank:
+          type: boolean
+          default: true
+        include_answer:
+          type: boolean
+          default: true
+          description: If false, return only citations (retrieval-only mode).
+        conversation_history:
+          type: array
+          maxItems: 15
+          items:
+            $ref: '#/components/schemas/ConversationTurn'
+        style_hints:
+          $ref: '#/components/schemas/StyleHints'
+
+    QueryResponse:
+      type: object
+      required: [request_id, citations, usage, latency_ms, model_version]
+      properties:
+        request_id: { type: string, format: uuid }
+        answer:
+          type: string
+          nullable: true
+          description: |
+            Final Romanian prose. Plain text — NO Markdown (Telegram
+            parse_mode=Markdown breaks on LLM output).
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/Citation'
+        usage:
+          $ref: '#/components/schemas/Usage'
+        latency_ms:
+          type: integer
+          minimum: 0
+        model_version: { type: string }
+        retrieval_strategy:
+          type: string
+          nullable: true
+          description: Opaque label for A/B analytics.
+        confidence:
+          type: number
+          format: float
+          minimum: 0.0
+          maximum: 1.0
+          nullable: true
+        trace_id:
+          type: string
+          nullable: true
+          description: Provider's internal trace ID.
+
+    # ---- Ingest ----
+    IngestRequest:
+      type: object
+      required: [namespace_id, source_id, source_type]
+      properties:
+        namespace_id: { type: string }
+        source_id: { type: string }
+        source_type:
+          type: string
+          enum: [url, file]
+        url:
+          type: string
+          format: uri
+          description: Required when source_type=url
+        mime_type_hint:
+          type: string
+          example: "text/html"
+        metadata:
+          type: object
+          additionalProperties: true
+          properties:
+            source_title: { type: string }
+            language: { type: string }
+            document_type: { type: string }
+            published_at: { type: string, format: date }
+        callback_url:
+          type: string
+          format: uri
+          nullable: true
+          description: HMAC-signed callback when ingestion completes.
+
+    IngestStatus:
+      type: string
+      enum:
+        - queued
+        - fetching
+        - extracting
+        - chunking
+        - embedding
+        - indexing
+        - done
+        - failed
+        - cancelled
+
+    IngestProgress:
+      type: object
+      required: [stage, percent, chunks_created]
+      properties:
+        stage:
+          type: string
+          enum: [queued, fetching, extracting, chunking, embedding, indexing, done]
+        percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        chunks_created:
+          type: integer
+          minimum: 0
+
+    IngestJob:
+      type: object
+      required: [job_id, status, submitted_at]
+      properties:
+        job_id: { type: string }
+        namespace_id: { type: string }
+        source_id: { type: string }
+        status:
+          $ref: '#/components/schemas/IngestStatus'
+        progress:
+          $ref: '#/components/schemas/IngestProgress'
+        submitted_at: { type: string, format: date-time }
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+        estimated_completion_at:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          type: object
+          nullable: true
+          properties:
+            code: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }
+
+    # ---- Namespace ----
+    NamespaceStats:
+      type: object
+      required:
+        - namespace_id
+        - chunk_count
+        - source_count
+        - total_tokens_indexed
+        - last_ingested_at
+        - embedding_model
+        - embedding_dim
+      properties:
+        namespace_id: { type: string }
+        chunk_count: { type: integer, minimum: 0 }
+        source_count: { type: integer, minimum: 0 }
+        total_tokens_indexed: { type: integer, minimum: 0 }
+        last_ingested_at:
+          type: string
+          format: date-time
+          nullable: true
+        embedding_model: { type: string }
+        embedding_dim: { type: integer, minimum: 1 }
+
+    # ---- Health ----
+    HealthStatus:
+      type: object
+      required: [status, version, uptime_seconds]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, down]
+        version: { type: string }
+        uptime_seconds: { type: integer, minimum: 0 }
+        dependencies:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [ok, degraded, down]
+
+  responses:
+    BadRequest:
+      description: Malformed request or missing required field
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Tenant mismatch or namespace not owned
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Job, namespace, or source does not exist
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PayloadTooLarge:
+      description: File or body too big
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UnsupportedMediaType:
+      description: MIME type not in allowlist
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: Semantically invalid request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Too many requests; back off
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    InternalError:
+      description: Provider-side error; retry-safe with Idempotency-Key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UpstreamError:
+      description: Provider's downstream (LLM, vector store) unreachable
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Timeout:
+      description: Upstream timeout; caller should retry
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }

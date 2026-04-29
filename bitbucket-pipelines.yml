@@ -1,0 +1,42 @@
+image: python:3.12
+
+pipelines:
+  pull-requests:
+    "**":
+      - step:
+          name: Lint, test, build, scan
+          services:
+            - docker
+          caches:
+            - pip
+          script:
+            - pip install -e .[dev]
+            - ruff check app tests
+            - mypy app
+            - pytest --maxfail=1 --disable-warnings -q
+            - docker build -t citydock-rag-service:pr .
+            - pipe: aquasecurity/trivy-pipe:1.0.0
+              variables:
+                imageRef: citydock-rag-service:pr
+                exitCode: "1"
+                severity: "HIGH,CRITICAL"
+
+  tags:
+    "v*.*.*":
+      - step:
+          name: Release validation
+          services:
+            - docker
+          caches:
+            - pip
+          script:
+            - pip install -e .[dev]
+            - ruff check app tests
+            - mypy app
+            - pytest --maxfail=1 --disable-warnings -q
+            - docker build -t citydock-rag-service:release .
+            - pipe: aquasecurity/trivy-pipe:1.0.0
+              variables:
+                imageRef: citydock-rag-service:release
+                exitCode: "1"
+                severity: "HIGH,CRITICAL"

@@ -1,0 +1,70 @@
+services:
+  citydock-rag-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      API_KEY: ${API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      DEFAULT_TENANT: ${DEFAULT_TENANT:-ph-balta-doamnei}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${OTEL_EXPORTER_OTLP_PROTOCOL:-grpc}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-citydock-rag-service}
+      OTEL_RESOURCE_ATTRIBUTES: ${OTEL_RESOURCE_ATTRIBUTES:-deployment.environment=production}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rag:rag@rag-postgres:5432/rag}
+      REDIS_URL: ${REDIS_URL:-redis://rag-redis:6379/0}
+    depends_on:
+      - rag-postgres
+      - rag-redis
+    networks:
+      - lex-advisor
+    restart: unless-stopped
+
+  citydock-rag-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["arq", "app.worker.WorkerSettings"]
+    environment:
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rag:rag@rag-postgres:5432/rag}
+      REDIS_URL: ${REDIS_URL:-redis://rag-redis:6379/0}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-citydock-rag-worker}
+    depends_on:
+      - rag-postgres
+      - rag-redis
+    networks:
+      - lex-advisor
+    restart: unless-stopped
+
+  rag-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+    volumes:
+      - rag-postgres-data:/var/lib/postgresql/data
+    networks:
+      - lex-advisor
+    restart: unless-stopped
+
+  rag-redis:
+    image: redis:7-alpine
+    command: redis-server --save 60 1000 --appendonly yes
+    volumes:
+      - rag-redis-data:/data
+    networks:
+      - lex-advisor
+    restart: unless-stopped
+
+networks:
+  lex-advisor:
+    external: true
+
+volumes:
+  rag-postgres-data:
+  rag-redis-data:

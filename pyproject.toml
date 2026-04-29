@@ -1,0 +1,60 @@
+[project]
+name = "citydock-rag-service"
+version = "1.0.0"
+description = "CityDock RAG service implementation"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.116.0",
+  "uvicorn[standard]>=0.35.0",
+  "pydantic>=2.11.0",
+  "pydantic-settings>=2.10.0",
+  "python-multipart>=0.0.20",
+  "httpx>=0.28.0",
+  "beautifulsoup4>=4.13.0",
+  "pypdf>=5.9.0",
+  "prometheus-client>=0.22.0",
+  "sqlalchemy>=2.0.40",
+  "psycopg[binary]>=3.2.0",
+  "alembic>=1.16.0",
+  "pgvector>=0.4.0",
+  "numpy>=1.26.0",
+  "pyyaml>=6.0",
+  "google-genai>=1.0.0",
+  "arq>=0.26.0",
+  "opentelemetry-distro>=0.55b0",
+  "opentelemetry-exporter-otlp-proto-grpc>=1.27.0",
+  "opentelemetry-instrumentation-fastapi>=0.55b0",
+  "opentelemetry-instrumentation-httpx>=0.55b0",
+  "opentelemetry-instrumentation-sqlalchemy>=0.55b0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4.0",
+  "pytest-asyncio>=1.1.0",
+  "ruff>=0.12.0",
+  "mypy>=1.17.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_return_any = true
+
+[build-system]
+requires = ["setuptools>=70.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
