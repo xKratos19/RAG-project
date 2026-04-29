@@ -63,8 +63,10 @@ async def _fetch_url(url: str) -> str:
             response = await client.get(url)
             response.raise_for_status()
             return response.text
-    except Exception:
-        return url
+    except httpx.HTTPStatusError as exc:
+        raise ValueError(f"fetch_failed: URL returned {exc.response.status_code}") from exc
+    except Exception as exc:
+        raise ValueError(f"fetch_failed: {exc}") from exc
 
 
 def _extract_text_from_bytes(body: bytes, content_type: str | None) -> str:

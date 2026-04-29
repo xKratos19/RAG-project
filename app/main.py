@@ -198,7 +198,10 @@ async def ingest_json(
             raise_error(400, "invalid_request", "Missing file in multipart request.", request_id)
         file_bytes, file_content_type = await _read_and_validate_file(upload_file, request_id)
     else:
-        body = await request.json()
+        try:
+            body = await request.json()
+        except Exception:
+            raise_error(400, "invalid_request", "Request body is missing or not valid JSON.", request_id)
         payload = IngestRequest.model_validate(body)
         file_bytes, file_content_type = None, None
         if file is not None:
