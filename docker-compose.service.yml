@@ -1,4 +1,18 @@
 services:
+  rag-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rag:rag@rag-postgres:5432/rag}
+    depends_on:
+      rag-postgres:
+        condition: service_healthy
+    networks:
+      - lex-advisor
+    restart: "no"
+
   citydock-rag-service:
     build:
       context: .
@@ -17,8 +31,8 @@ services:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://rag:rag@rag-postgres:5432/rag}
       REDIS_URL: ${REDIS_URL:-redis://rag-redis:6379/0}
     depends_on:
-      rag-postgres:
-        condition: service_healthy
+      rag-migrate:
+        condition: service_completed_successfully
       rag-redis:
         condition: service_started
     networks:
@@ -38,8 +52,8 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-citydock-rag-worker}
     depends_on:
-      rag-postgres:
-        condition: service_healthy
+      rag-migrate:
+        condition: service_completed_successfully
       rag-redis:
         condition: service_started
     networks:
