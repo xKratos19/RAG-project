@@ -57,9 +57,22 @@ def _extract_article_number(text: str) -> str | None:
     return match.group(1) if match else None
 
 
+_FETCH_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "ro-RO,ro;q=0.9,en;q=0.8",
+}
+
+
 async def _fetch_url(url: str) -> str:
     try:
-        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=60.0, follow_redirects=True, headers=_FETCH_HEADERS
+        ) as client:
             response = await client.get(url)
             response.raise_for_status()
             return response.text
